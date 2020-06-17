@@ -113,3 +113,17 @@ string solidity::util::suffixedVariableNameList(string const& _baseName, size_t 
 	}
 	return result;
 }
+
+vector<string> solidity::util::split(string _input, char _delimiter)
+{
+	size_t delimiterPos = 0;
+	vector<string> tokens;
+	while ((delimiterPos = _input.find(_delimiter)) != std::string::npos)
+	{
+		tokens.push_back(_input.substr(0, delimiterPos));
+		_input.erase(0, delimiterPos + 1);
+	}
+	tokens.push_back(_input);
+
+	return tokens;
+}

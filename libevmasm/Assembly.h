@@ -53,7 +53,7 @@ public:
 	Assembly const& sub(size_t _sub) const { return *m_subs.at(_sub); }
 	Assembly& sub(size_t _sub) { return *m_subs.at(_sub); }
 	size_t numSubs() const { return m_subs.size(); }
-	AssemblyItem newPushSubSize(u256 const& _subId) { return AssemblyItem(PushSubSize, _subId); }
+	AssemblyItem newPushSubSize(size_t const& _subId) { return AssemblyItem(PushSubSize, _subId); }
 	AssemblyItem newPushLibraryAddress(std::string const& _identifier);
 	AssemblyItem newPushImmutable(std::string const& _identifier);
 	AssemblyItem newImmutableAssignment(std::string const& _identifier);
@@ -142,6 +142,9 @@ public:
 		std::map<std::string, unsigned> const& _sourceIndices = std::map<std::string, unsigned>()
 	) const;
 
+	std::vector<size_t> decodeSubIds(size_t _subObjectId) const;
+	size_t encodeSubIds(std::vector<size_t> const& _subIdPath);
+
 protected:
 	/// Does the same operations as @a optimise, but should only be applied to a sub and
 	/// returns the replaced tags. Also takes an argument containing the tags of this assembly
@@ -173,6 +176,12 @@ protected:
 	std::map<util::h256, std::string> m_strings;
 	std::map<util::h256, std::string> m_libraries; ///< Identifiers of libraries to be linked.
 	std::map<util::h256, std::string> m_immutables; ///< Identifiers of immutables.
+
+	/// map from sub object identifier to vector representing path to particular subobject
+	/// this map is used only for subobjects which are not direct subobjects (where path is having more than one value)
+	std::map<size_t, std::vector<size_t>> m_subObjectPaths;
+	/// current sub object id (this will be used for object which are not direct subobjects)
+	size_t m_currentSubObjectId = std::numeric_limits<size_t>::max();
 
 	mutable LinkerObject m_assembledObject;
 	mutable std::vector<size_t> m_tagPositionsInBytecode;

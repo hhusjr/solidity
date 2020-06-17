@@ -23,10 +23,11 @@
 #include <libyul/AsmPrinter.h>
 #include <libyul/Exceptions.h>
 
-#include <libsolutil/Visitor.h>
 #include <libsolutil/CommonData.h>
+#include <libsolutil/StringUtils.h>
 
 #include <boost/algorithm/string/replace.hpp>
+#include <boost/algorithm/string.hpp>
 
 using namespace std;
 using namespace solidity;
@@ -61,13 +62,47 @@ string Object::toString(Dialect const* _dialect) const
 	return "object \"" + name.str() + "\" {\n" + indent(inner) + "\n}";
 }
 
-set<YulString> Object::dataNames() const
+set<YulString> Object::qualifiedDataNames() const
 {
-	set<YulString> names;
-	names.insert(name);
-	for (auto const& subObject: subIndexByName)
-		names.insert(subObject.first);
-	// The empty name is not valid
-	names.erase(YulString{});
-	return names;
+	set<YulString> qualifiedNames = {name};
+	for (shared_ptr<ObjectNode> const& subObjectNode: subObjects)
+	{
+		yulAssert(qualifiedNames.count(subObjectNode->name) == 0, "");
+		qualifiedNames.insert(subObjectNode->name);
+		if (auto const* subObject = dynamic_cast<Object const*>(subObjectNode.get()))
+			for (YulString const& subSubObj: subObject->qualifiedDataNames())
+				if (subObject->name != subSubObj)
+				{
+					yulAssert(qualifiedNames.count(YulString{subObject->name.str() + "." + subSubObj.str()}) == 0, "");
+					qualifiedNames.insert(YulString{subObject->name.str() + "." + subSubObj.str()});
+				}
+	}
+
+	qualifiedNames.erase(YulString{});
+	return qualifiedNames;
+}
+
+vector<size_t> Object::pathToSubObject(string _qualifiedName) const
+{
+	if (_qualifiedName == name.str())
+		return {};
+	if (boost::algorithm::starts_with(_qualifiedName, name.str() + "."))
+		_qualifiedName = _qualifiedName.substr(name.str().length() + 1);
+
+	vector<string> subObjectPathStr = solidity::util::split(_qualifiedName, '.');
+
+	vector<size_t> path;
+	Object const* currentObject = this;
+	for (string const& currentSubObjectName: subObjectPathStr)
+	{
+		auto subIndexIt = currentObject->subIndexByName.find(YulString{currentSubObjectName});
+		if (subIndexIt == currentObject->subIndexByName.end())
+			return {};
+		path.push_back({subIndexIt->second});
+		currentObject = dynamic_cast<Object const*>(currentObject->subObjects[subIndexIt->second].get());
+		if (!currentObject)
+			return {};
+	}
+
+	return path;
 }

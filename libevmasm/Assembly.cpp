@@ -629,15 +629,18 @@ LinkerObject const& Assembly::assemble() const
 			ret.bytecode.resize(ret.bytecode.size() + bytesPerDataRef);
 			break;
 		case PushSub:
-			assertThrow(i.data() <= numeric_limits<size_t>::max(), AssemblyException, "");
 			ret.bytecode.push_back(dataRefPush);
 			subRef.insert(make_pair(static_cast<size_t>(i.data()), ret.bytecode.size()));
 			ret.bytecode.resize(ret.bytecode.size() + bytesPerDataRef);
 			break;
 		case PushSubSize:
 		{
-			assertThrow(i.data() <= numeric_limits<size_t>::max(), AssemblyException, "");
-			auto s = m_subs.at(static_cast<size_t>(i.data()))->assemble().bytecode.size();
+			vector<size_t> subObjectPath = decodeSubIds(static_cast<size_t>(i.data()));
+			Assembly const* currentAssembly = this;
+			for (size_t currentSubId: subObjectPath)
+				currentAssembly = currentAssembly->m_subs.at(currentSubId).get();
+			assertThrow(currentAssembly, AssemblyException, "");
+			auto s = currentAssembly->assemble().bytecode.size();
 			i.setPushedValue(u256(s));
 			uint8_t b = max<unsigned>(1, util::bytesRequired(s));
 			ret.bytecode.push_back((uint8_t)Instruction::PUSH1 - 1 + b);
@@ -705,18 +708,18 @@ LinkerObject const& Assembly::assemble() const
 		// Append an INVALID here to help tests find miscompilation.
 		ret.bytecode.push_back(uint8_t(Instruction::INVALID));
 
-	for (size_t i = 0; i < m_subs.size(); ++i)
+	for (auto const& sub: subRef)
 	{
-		auto references = subRef.equal_range(i);
-		if (references.first == references.second)
-			continue;
-		for (auto ref = references.first; ref != references.second; ++ref)
-		{
-			bytesRef r(ret.bytecode.data() + ref->second, bytesPerDataRef);
-			toBigEndian(ret.bytecode.size(), r);
-		}
-		ret.append(m_subs[i]->assemble());
+		vector<size_t> subIds = decodeSubIds(sub.first);
+		Assembly const* currentAssembly = this;
+		for (size_t currentSubId: subIds)
+			currentAssembly = currentAssembly->m_subs.at(currentSubId).get();
+		assertThrow(currentAssembly, AssemblyException, "");
+		bytesRef r(ret.bytecode.data() + sub.second, bytesPerDataRef);
+		toBigEndian(ret.bytecode.size(), r);
+		ret.append(currentAssembly->assemble());
 	}
+
 	for (auto const& i: tagRef)
 	{
 		size_t subId;
@@ -755,4 +758,26 @@ LinkerObject const& Assembly::assemble() const
 		toBigEndian(ret.bytecode.size(), r);
 	}
 	return ret;
+}
+
+vector<size_t> Assembly::decodeSubIds(size_t _subObjectId) const
+{
+	if (_subObjectId < m_subs.size())
+		return {_subObjectId};
+
+	assertThrow(m_subObjectPaths.count(_subObjectId) > 0, AssemblyException, "");
+	return m_subObjectPaths.at(_subObjectId);
+}
+
+size_t Assembly::encodeSubIds(std::vector<size_t> const& _subIdPath)
+{
+	assertThrow(!_subIdPath.empty(), AssemblyException, "");
+	if (_subIdPath.size() == 1)
+	{
+		assertThrow(_subIdPath[0] < m_subs.size(), AssemblyException, "");
+		return _subIdPath[0];
+	}
+	assertThrow(m_currentSubObjectId >= m_subs.size(), AssemblyException, "");
+	m_subObjectPaths[m_currentSubObjectId] = _subIdPath;
+	return m_currentSubObjectId--;
 }

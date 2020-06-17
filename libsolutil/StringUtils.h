@@ -176,4 +176,8 @@ inline std::string formatNumberReadable(
 	return str;
 }
 
+/// Splits string @a _input to substrings divided by @a _delimiter
+/// @returns vector of substrings
+std::vector<std::string> split(std::string _input, char _delimiter);
+
 }

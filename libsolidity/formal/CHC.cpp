@@ -141,12 +141,11 @@ void CHC::endVisit(ContractDefinition const& _contract)
 	else
 		inlineConstructorHierarchy(_contract);
 
-	auto summary = predicate(*m_constructorSummaryPredicate, vector<smtutil::Expression>{m_error.currentValue()} + currentStateVariables());
-	connectBlocks(m_currentBlock, summary);
+	connectBlocks(m_currentBlock, summary(_contract), m_error.currentValue() == 0);
 
 	clearIndices(m_currentContract, nullptr);
-	auto stateExprs = vector<smtutil::Expression>{m_error.currentValue()} + currentStateVariables();
-	setCurrentBlock(*m_constructorSummaryPredicate, &stateExprs);
+	vector<smtutil::Expression> symbArgs = currentFunctionVariables(*m_currentContract);
+	setCurrentBlock(*m_constructorSummaryPredicate, &symbArgs);
 
 	addAssertVerificationTarget(m_currentContract, m_currentBlock, smtutil::Expression(true), m_error.currentValue());
 	connectBlocks(m_currentBlock, interface(), m_error.currentValue() == 0);
@@ -226,11 +225,11 @@ void CHC::endVisit(FunctionDefinition const& _function)
 		if (_function.isConstructor())
 		{
 			string suffix = m_currentContract->name() + "_" + to_string(m_currentContract->id());
-			auto constructorExit = createSymbolicBlock(constructorSort(), "constructor_exit_" + suffix);
-			connectBlocks(m_currentBlock, predicate(*constructorExit, vector<smtutil::Expression>{m_error.currentValue()} + currentStateVariables()));
+			auto constructorExit = createSymbolicBlock(interfaceSort(), "constructor_exit_" + suffix);
+			connectBlocks(m_currentBlock, predicate(*constructorExit, currentStateVariables()));
 
 			clearIndices(m_currentContract, m_currentFunction);
-			auto stateExprs = vector<smtutil::Expression>{m_error.currentValue()} + currentStateVariables();
+			auto stateExprs = currentStateVariables();
 			setCurrentBlock(*constructorExit, &stateExprs);
 		}
 		else
@@ -692,6 +691,10 @@ vector<smtutil::SortPointer> CHC::stateSorts(ContractDefinition const& _contract
 
 smtutil::SortPointer CHC::constructorSort()
 {
+	solAssert(m_currentContract, "");
+	if (auto const* constructor = m_currentContract->constructor())
+		return sort(*constructor);
+
 	return make_shared<smtutil::FunctionSort>(
 		vector<smtutil::SortPointer>{smtutil::SortProvider::uintSort} + m_stateSorts,
 		smtutil::SortProvider::boolSort
@@ -879,8 +882,13 @@ smtutil::Expression CHC::error(unsigned _idx)
 	return m_errorPredicate->functionValueAtIndex(_idx)({});
 }
 
-smtutil::Expression CHC::summary(ContractDefinition const&)
+smtutil::Expression CHC::summary(ContractDefinition const& _contract)
 {
+	if (auto const* constructor = _contract.constructor())
+		return (*m_constructorSummaryPredicate)(
+			currentFunctionVariables(*constructor)
+		);
+
 	return (*m_constructorSummaryPredicate)(
 		vector<smtutil::Expression>{m_error.currentValue()} +
 		currentStateVariables()
@@ -977,20 +985,34 @@ vector<smtutil::Expression> CHC::currentStateVariables(ContractDefinition const&
 
 vector<smtutil::Expression> CHC::currentFunctionVariables()
 {
+	solAssert(m_currentFunction, "");
+	return currentFunctionVariables(*m_currentFunction);
+}
+
+vector<smtutil::Expression> CHC::currentFunctionVariables(FunctionDefinition const& _function)
+{
 	vector<smtutil::Expression> initInputExprs;
 	vector<smtutil::Expression> mutableInputExprs;
-	for (auto const& var: m_currentFunction->parameters())
+	for (auto const& var: _function.parameters())
 	{
 		initInputExprs.push_back(m_context.variable(*var)->valueAtIndex(0));
 		mutableInputExprs.push_back(m_context.variable(*var)->currentValue());
 	}
-	auto returnExprs = applyMap(m_currentFunction->returnParameters(), [this](auto _var) { return currentValue(*_var); });
+	auto returnExprs = applyMap(_function.returnParameters(), [this](auto _var) { return currentValue(*_var); });
 	return vector<smtutil::Expression>{m_error.currentValue()} +
 		initialStateVariables() +
 		initInputExprs +
 		currentStateVariables() +
 		mutableInputExprs +
 		returnExprs;
+}
+
+vector<smtutil::Expression> CHC::currentFunctionVariables(ContractDefinition const& _contract)
+{
+	if (auto const* constructor = _contract.constructor())
+		return currentFunctionVariables(*constructor);
+
+	return vector<smtutil::Expression>{m_error.currentValue()} + currentStateVariables();
 }
 
 vector<smtutil::Expression> CHC::currentBlockVariables()

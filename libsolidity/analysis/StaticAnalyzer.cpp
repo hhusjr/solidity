@@ -99,6 +99,19 @@ void StaticAnalyzer::endVisit(ContractDefinition const&)
 {
 	m_library = false;
 	m_currentContract = nullptr;
+
+	// check function names
+	if (m_hasConstructor) {
+        return;
+	}
+
+	for (auto function : m_mayBeConstructor) {
+        m_errorReporter.warning(
+                function->location(),
+                "The function name is similar with the contract name but no constructor has been found "
+                "in the contract right now. Maybe it's a constructor?"
+        );
+	}
 }
 
 bool StaticAnalyzer::visit(FunctionDefinition const& _function)
@@ -109,6 +122,23 @@ bool StaticAnalyzer::visit(FunctionDefinition const& _function)
 		solAssert(!m_currentFunction, "");
 	solAssert(m_localVarUseCount.empty(), "");
 	m_constructor = _function.isConstructor();
+
+	if (m_constructor) {
+	    m_hasConstructor = true;
+	    return true;
+	}
+
+	if (m_hasConstructor) {
+	    return true;
+	}
+
+	// check function name
+	const ASTString& name = _function.name();
+	size_t dis = stringDistance(name, m_currentContract->name());
+	if (dis <= DISTANCE_THRESHOLD) {
+        m_mayBeConstructor.emplace_back(&_function);
+	}
+
 	return true;
 }
 
@@ -355,4 +385,21 @@ bigint StaticAnalyzer::structureSizeEstimate(Type const& _type, set<StructDefini
 		break;
 	}
 	return bigint(1);
+}
+
+size_t StaticAnalyzer::stringDistance(const ASTString &a, const ASTString &b) {
+    size_t len1 = a.length(), len2 = b.length();
+    std::vector<std::vector<size_t> > dp;
+    dp.resize(len1);
+    for (size_t i = 0; i < len1; i++) {
+        dp[i].reserve(len2);
+        for (size_t j = 0; j < len2; j++) {
+            if (std::min(i, j) == 0) {
+                dp[i][j] = std::max(i, j);
+            } else {
+                dp[i][j] = std::min(std::min(dp[i - 1][j], dp[i][j - 1]) + 1, dp[i - 1][j - 1] + (a[i] != b[j]));
+            }
+        }
+    }
+    return dp[len1 - 1][len2 - 1];
 }

@@ -59,6 +59,7 @@ public:
 	bool analyze(SourceUnit const& _sourceUnit);
 
 private:
+    static const uint8_t DISTANCE_THRESHOLD = 2;
 
 	bool visit(ContractDefinition const& _contract) override;
 	void endVisit(ContractDefinition const& _contract) override;
@@ -77,6 +78,9 @@ private:
 
 	/// @returns the size of this type in storage, including all sub-types.
 	static bigint structureSizeEstimate(Type const& _type, std::set<StructDefinition const*>& _structsSeen);
+
+	/// @returns the edit distance between two strings
+    static size_t stringDistance(const ASTString &a, const ASTString &b);
 
 	langutil::ErrorReporter& m_errorReporter;
 
@@ -97,8 +101,14 @@ private:
 	/// Flag that indicates a constructor.
 	bool m_constructor = false;
 
+	// Flag that indicates if current contract has a constructor
+	bool m_hasConstructor = false;
+
 	/// Current contract.
 	ContractDefinition const* m_currentContract = nullptr;
+
+	/// Function names that are similiar with contract name
+	std::vector<FunctionDefinition const*> m_mayBeConstructor;
 };
 
 }

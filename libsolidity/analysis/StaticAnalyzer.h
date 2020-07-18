@@ -27,6 +27,7 @@
 #include <libsolidity/ast/ASTAnnotations.h>
 #include <libsolidity/ast/ASTForward.h>
 #include <libsolidity/ast/ASTVisitor.h>
+#include <libsolidity/analysis/ConstructorChecker.h>
 
 namespace langutil
 {
@@ -40,6 +41,103 @@ namespace solidity
 
 class ConstructorUsesAssembly;
 
+struct FunctionFeature {
+	FunctionDefinition const* function;
+
+	int nAssignment = 0;
+	int nNormalAssignment = 0;
+
+	int nStateVarAssignment = 0;
+	int nStateVarNormalAssignment = 0;
+
+	int nRightHandSideMsgSender = 0;
+	int nOwnerIsMsgSender = 0;
+
+	int nLeftHandSideBalanceAssign = 0;
+	int nLeftHandSideBalanceOwnerAssign = 0;
+
+	int nIf = 0;
+	int nLoop = 0;
+	int nEmit = 0;
+	int nVarDefinition = 0;
+	int nGuarantee = 0;
+	int nFunctionCall = 0;
+
+	int visibilityTypeCode = 0;
+	bool isOwnerOnly = false;
+	bool hasReturnValue = false;
+	bool isCalled = false;
+
+	void print() {
+		std::cout << "===== Function report: " << function->name() << " =====" << std::endl;
+		std::cout << "nAssignment=" << nAssignment << std::endl;
+		std::cout << "nNormalAssignment=" << nNormalAssignment << std::endl;
+		std::cout << "nStateVarAssignment=" << nStateVarAssignment << std::endl;
+		std::cout << "nStateVarNormalAssignment=" << nStateVarNormalAssignment << std::endl;
+		std::cout << "nRightHandSideMsgSender=" << nRightHandSideMsgSender << std::endl;
+		std::cout << "nOwnerIsMsgSender=" << nOwnerIsMsgSender << std::endl;
+		std::cout << "nLeftHandSideBalanceAssign=" << nLeftHandSideBalanceAssign << std::endl;
+		std::cout << "nLeftHandSideBalanceOwnerAssign=" << nLeftHandSideBalanceOwnerAssign << std::endl;
+		std::cout << "nIf=" << nIf << std::endl;
+		std::cout << "nLoop=" << nLoop << std::endl;
+		std::cout << "nEmit=" << nEmit << std::endl;
+		std::cout << "nVarDefinition=" << nVarDefinition << std::endl;
+		std::cout << "nGuarantee=" << nGuarantee << std::endl;
+		std::cout << "nFunctionCall=" << nFunctionCall << std::endl;
+		std::cout << "visibilityTypeCode=" << visibilityTypeCode << std::endl;
+		std::cout << "isOwnerOnly=" << isOwnerOnly << std::endl;
+		std::cout << "hasReturnValue=" << hasReturnValue << std::endl;
+		std::cout << "isCalled=" << isCalled << std::endl;
+		std::cout << "predicted=" << ConstructorChecker(toFeatures()) << std::endl;
+	}
+
+	std::vector<double> toFeatures() {
+		std::vector<double> featureVector;
+		featureVector.resize(19);
+		/*
+		feature_vector[0] - loop
+		feature_vector[1] - rhs_msgsender
+		feature_vector[2] - var_definition
+		feature_vector[3] - is_only_owner
+		feature_vector[4] - state_var_normal_assignment
+		feature_vector[5] - is_called
+		feature_vector[6] - owner_is_msgsender
+		feature_vector[7] - guarantee
+		feature_vector[8] - is_return
+		feature_vector[9] - assignment
+		feature_vector[10] - total_stmt
+		feature_vector[11] - state_var_assign
+		feature_vector[12] - emit
+		feature_vector[13] - visibility
+		feature_vector[14] - normal_assignment
+		feature_vector[15] - if
+		feature_vector[16] - function_call
+		feature_vector[17] - lhs_balance_owner_assign
+		feature_vector[18] - lhs_balance_assign
+		 */
+		double totalStmt = nAssignment + nIf + nLoop + nVarDefinition + nEmit + nGuarantee + nFunctionCall;
+		featureVector[0] = nLoop / totalStmt;
+		featureVector[1] = nRightHandSideMsgSender / totalStmt;
+		featureVector[2] = nVarDefinition / totalStmt;
+		featureVector[3] = isOwnerOnly;
+		featureVector[4] = nStateVarNormalAssignment / totalStmt;
+		featureVector[5] = isCalled;
+		featureVector[6] = nOwnerIsMsgSender / totalStmt;
+		featureVector[7] = nGuarantee / totalStmt;
+		featureVector[8] = hasReturnValue;
+		featureVector[9] = nAssignment / totalStmt;
+		featureVector[10] = totalStmt;
+		featureVector[11] = nStateVarAssignment / totalStmt;
+		featureVector[12] = nEmit / totalStmt;
+		featureVector[13] = visibilityTypeCode;
+		featureVector[14] = nNormalAssignment / totalStmt;
+		featureVector[15] = nIf / totalStmt;
+		featureVector[16] = nFunctionCall / totalStmt;
+		featureVector[17] = nLeftHandSideBalanceOwnerAssign / totalStmt;
+		featureVector[18] = nLeftHandSideBalanceAssign / totalStmt;
+		return featureVector;
+	}
+};
 
 /**
  * The module that performs static analysis on the AST.
@@ -68,7 +166,12 @@ private:
 	void endVisit(FunctionDefinition const& _function) override;
 
 	bool visit(ExpressionStatement const& _statement) override;
+	bool visit(IfStatement const& _statement) override;
+	bool visit(ForStatement const& _statement) override;
+	bool visit(WhileStatement const& _statement) override;
 	bool visit(VariableDeclaration const& _variable) override;
+	bool visit(VariableDeclarationStatement const& _statement) override;
+	bool visit(EmitStatement const& _statement) override;
 	bool visit(Identifier const& _identifier) override;
 	bool visit(Return const& _return) override;
 	bool visit(MemberAccess const& _memberAccess) override;
@@ -80,7 +183,10 @@ private:
 	static bigint structureSizeEstimate(Type const& _type, std::set<StructDefinition const*>& _structsSeen);
 
 	/// @returns the edit distance between two strings
-    static size_t stringDistance(const ASTString &a, const ASTString &b);
+	static size_t stringDistance(const ASTString &a, const ASTString &b);
+
+	/// @returns a flag indicates if the MethodAccess is msg.sender
+	static bool isMsgSender(const MemberAccess *methodAccess);
 
 	langutil::ErrorReporter& m_errorReporter;
 
@@ -107,8 +213,21 @@ private:
 	/// Current contract.
 	ContractDefinition const* m_currentContract = nullptr;
 
-	/// Function names that are similiar with contract name
-	std::vector<FunctionDefinition const*> m_mayBeConstructor;
+	/// Function names that are similiar with contract name and satisfy the decision tree
+	std::vector<FunctionFeature> m_mayBeConstructor;
+
+	// Current function need to be analyzed?
+	bool m_currentFunctionRequiresAnalysis = false;
+
+	// Features of current visiting function
+	FunctionFeature* m_currentFunctionFeatures;
+
+	// Called function names
+	std::set<ASTString> m_calledFunctionNames;
+
+	static Identifier const* leftHandSideMainPart(Expression const* lhs);
+
+	static ASTString toLowerCase(const ASTString &str);
 };
 
 }

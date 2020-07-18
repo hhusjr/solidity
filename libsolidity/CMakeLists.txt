@@ -30,6 +30,7 @@ set(sources
 	analysis/TypeChecker.h
 	analysis/ViewPureChecker.cpp
 	analysis/ViewPureChecker.h
+	analysis/ConstructorChecker.h
 	ast/AST.cpp
 	ast/AST.h
 	ast/AST_accept.h

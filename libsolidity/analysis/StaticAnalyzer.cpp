@@ -92,6 +92,10 @@ bool StaticAnalyzer::visit(ContractDefinition const& _contract)
 {
 	m_library = _contract.isLibrary();
 	m_currentContract = &_contract;
+	m_hasConstructor = false;
+	m_mayBeConstructor.clear();
+	m_calledFunctionNames.clear();
+	m_currentFunctionFeatures = nullptr;
 	return true;
 }
 
@@ -106,11 +110,14 @@ void StaticAnalyzer::endVisit(ContractDefinition const&)
 	}
 
 	for (auto function : m_mayBeConstructor) {
-        m_errorReporter.warning(
-                function->location(),
-                "The function name is similar with the contract name but no constructor has been found "
-                "in the contract right now. Maybe it's a constructor?"
-        );
+		function.isCalled = m_calledFunctionNames.count(function.function->name());
+		if (ConstructorChecker(function.toFeatures())) {
+			m_errorReporter.warning(
+				function.function->location(),
+				"The function name is similar with the contract name but no constructor has been found "
+				"in the contract right now. Maybe it's a constructor?"
+			);
+		}
 	}
 }
 
@@ -125,7 +132,6 @@ bool StaticAnalyzer::visit(FunctionDefinition const& _function)
 
 	if (m_constructor) {
 	    m_hasConstructor = true;
-	    return true;
 	}
 
 	if (m_hasConstructor) {
@@ -134,9 +140,43 @@ bool StaticAnalyzer::visit(FunctionDefinition const& _function)
 
 	// check function name
 	const ASTString& name = _function.name();
+	if (name.empty()) {
+		return true;
+	}
+	m_currentFunctionRequiresAnalysis = false;
 	size_t dis = stringDistance(name, m_currentContract->name());
 	if (dis <= DISTANCE_THRESHOLD) {
-        m_mayBeConstructor.emplace_back(&_function);
+        m_mayBeConstructor.emplace_back();
+        m_currentFunctionFeatures = &m_mayBeConstructor[m_mayBeConstructor.size() - 1];
+        m_currentFunctionRequiresAnalysis = true;
+
+        m_currentFunctionFeatures->function = &_function;
+
+        for (auto modifier : _function.modifiers()) {
+        	if (toLowerCase(modifier->name()->name()).find("owner") != std::string::npos) {
+				m_currentFunctionFeatures->isOwnerOnly = true;
+				break;
+        	}
+        }
+        m_currentFunctionFeatures->hasReturnValue = !_function.returnParameters().empty();
+
+        switch (_function.visibility()) {
+			case Declaration::Visibility::Default:
+				m_currentFunctionFeatures->visibilityTypeCode = 1;
+				break;
+			case Declaration::Visibility::Private:
+				m_currentFunctionFeatures->visibilityTypeCode = 4;
+				break;
+			case Declaration::Visibility::Internal:
+				m_currentFunctionFeatures->visibilityTypeCode = 2;
+				break;
+			case Declaration::Visibility::Public:
+				m_currentFunctionFeatures->visibilityTypeCode = 1;
+				break;
+			case Declaration::Visibility::External:
+				m_currentFunctionFeatures->visibilityTypeCode = 3;
+				break;
+		}
 	}
 
 	return true;
@@ -159,6 +199,8 @@ void StaticAnalyzer::endVisit(FunctionDefinition const&)
 	m_localVarUseCount.clear();
 	m_constructor = false;
 	m_currentFunction = nullptr;
+
+	m_currentFunctionRequiresAnalysis = false;
 }
 
 bool StaticAnalyzer::visit(Identifier const& _identifier)
@@ -207,6 +249,21 @@ bool StaticAnalyzer::visit(Return const& _return)
 	return true;
 }
 
+Identifier const* StaticAnalyzer::leftHandSideMainPart(Expression const* lhs) {
+	Expression const* expr = lhs;
+	// remove the member link
+	while (const MemberAccess* member = dynamic_cast<MemberAccess const*>(expr)) {
+		expr = &member->expression();
+	}
+	while (const IndexAccess* indexAccess = dynamic_cast<IndexAccess const*>(expr)) {
+		expr = &indexAccess->baseExpression();
+	}
+	while (const MemberAccess* member = dynamic_cast<MemberAccess const*>(expr)) {
+		expr = &member->expression();
+	}
+	return dynamic_cast<Identifier const*>(expr);
+}
+
 bool StaticAnalyzer::visit(ExpressionStatement const& _statement)
 {
 	if (_statement.expression().annotation().isPure)
@@ -215,7 +272,166 @@ bool StaticAnalyzer::visit(ExpressionStatement const& _statement)
 			"Statement has no effect."
 		);
 
+	if (!m_currentFunctionRequiresAnalysis) {
+		return true;
+	}
+
+	if (const FunctionCall* functionCall = dynamic_cast<const FunctionCall*>(&_statement.expression())) {
+		if (const Identifier* funcId = dynamic_cast<const Identifier*>(&functionCall->expression())) {
+			if (funcId->name().empty()) {
+				return true;
+			}
+			if (funcId->name() == "require"
+			||  funcId->name() == "assert"
+			||  funcId->name() == "revert") {
+				m_currentFunctionFeatures->nGuarantee++;
+				return true;
+			}
+			m_calledFunctionNames.insert(funcId->name());
+		}
+		return true;
+	}
+
+	if (const Assignment* assignment = dynamic_cast<const Assignment*>(&_statement.expression())) {
+		m_currentFunctionFeatures->nAssignment++;
+		if (assignment->assignmentOperator() == Token::Assign) {
+			m_currentFunctionFeatures->nNormalAssignment++;
+		}
+
+		std::set<std::string> stateVariableNames;
+		for (auto &var : m_currentContract->stateVariables()) {
+			stateVariableNames.insert(var->name());
+		}
+
+		bool isStateVar = false;
+
+		if (const IndexAccess *lhsIndexAccess = dynamic_cast<const IndexAccess *>(&assignment->leftHandSide())) {
+			// a[x]
+			if (const Identifier *lhsIndexAccessVarName = dynamic_cast<const Identifier *>(&lhsIndexAccess->baseExpression())) {
+				// state var
+				if (stateVariableNames.count(lhsIndexAccessVarName->name())) {
+					isStateVar = true;
+				}
+
+				// balance[x] = y
+				if (toLowerCase(lhsIndexAccessVarName->name()).find("balance") != std::string::npos) {
+					m_currentFunctionFeatures->nLeftHandSideBalanceAssign++;
+
+					if (const Identifier *idInIndex = dynamic_cast<const Identifier *>(lhsIndexAccess->indexExpression())) {
+						// balance[owner] = x
+						if (toLowerCase(idInIndex->name()).find("owner") != std::string::npos) {
+							m_currentFunctionFeatures->nLeftHandSideBalanceOwnerAssign++;
+						}
+					} else if (const MemberAccess *memberInIndex = dynamic_cast<const MemberAccess *>(lhsIndexAccess->indexExpression())) {
+						// balance[msg.sender] = x
+						if (isMsgSender(memberInIndex)) {
+							m_currentFunctionFeatures->nLeftHandSideBalanceOwnerAssign++;
+						}
+					}
+				}
+			}
+		} else if (Identifier const * id = leftHandSideMainPart(&assignment->leftHandSide())) {
+			if (stateVariableNames.count(id->name())) {
+				isStateVar = true;
+			}
+		}
+
+		if (isStateVar) {
+			m_currentFunctionFeatures->nStateVarAssignment++;
+			if (assignment->assignmentOperator() == Token::Assign) {
+				m_currentFunctionFeatures->nStateVarNormalAssignment++;
+			}
+		}
+
+		// x = msg.sender
+		if (const MemberAccess *rhsMemberAccess = dynamic_cast<const MemberAccess *>(&assignment->rightHandSide())) {
+			m_currentFunctionFeatures->nRightHandSideMsgSender++;
+			if (isMsgSender(rhsMemberAccess)) {
+				// owner = msg.sender
+				if (const MemberAccess *lhsMemberAccess = dynamic_cast<const MemberAccess *>(&assignment->leftHandSide())) {
+					if (const Identifier *lhsMemberAccessVarName = dynamic_cast<const Identifier *>(&lhsMemberAccess->expression())) {
+						if (lhsMemberAccessVarName->name() == "owner") {
+							m_currentFunctionFeatures->nOwnerIsMsgSender++;
+						}
+					}
+				}
+			}
+		}
+
+		return true;
+	}
+
 	return true;
+}
+
+bool StaticAnalyzer::visit(IfStatement const& _statement)
+{
+	if (!m_currentFunctionRequiresAnalysis) {
+		return true;
+	}
+
+	_statement.trueStatement(); // UNUSED
+	m_currentFunctionFeatures->nIf++;
+
+	return true;
+}
+
+bool StaticAnalyzer::visit(ForStatement const& _statement)
+{
+	if (!m_currentFunctionRequiresAnalysis) {
+		return true;
+	}
+
+	_statement.condition(); // UNUSED
+	m_currentFunctionFeatures->nLoop++;
+
+	return true;
+}
+
+bool StaticAnalyzer::visit(WhileStatement const& _statement)
+{
+	if (!m_currentFunctionRequiresAnalysis) {
+		return true;
+	}
+
+	_statement.condition(); // UNUSED
+	m_currentFunctionFeatures->nLoop++;
+
+	return true;
+}
+
+bool StaticAnalyzer::visit(VariableDeclarationStatement const& _statement)
+{
+	if (!m_currentFunctionRequiresAnalysis) {
+		return true;
+	}
+
+	_statement.location(); // UNUSED
+	m_currentFunctionFeatures->nVarDefinition++;
+
+	return true;
+}
+
+bool StaticAnalyzer::visit(EmitStatement const& _statement)
+{
+	if (!m_currentFunctionRequiresAnalysis) {
+		return true;
+	}
+
+	_statement.location(); // UNUSED
+	m_currentFunctionFeatures->nEmit++;
+
+	return true;
+}
+
+bool StaticAnalyzer::isMsgSender(const dev::solidity::MemberAccess *methodAccess)
+{
+	if (const Identifier* memberExprName = dynamic_cast<const Identifier*>(&methodAccess->expression())) {
+		if (memberExprName->name() == "msg" && methodAccess->memberName() == "sender") {
+			return true;
+		}
+	}
+	return false;
 }
 
 bool StaticAnalyzer::visit(MemberAccess const& _memberAccess)
@@ -387,19 +603,35 @@ bigint StaticAnalyzer::structureSizeEstimate(Type const& _type, set<StructDefini
 	return bigint(1);
 }
 
-size_t StaticAnalyzer::stringDistance(const ASTString &a, const ASTString &b) {
-    size_t len1 = a.length(), len2 = b.length();
-    std::vector<std::vector<size_t> > dp;
-    dp.resize(len1);
-    for (size_t i = 0; i < len1; i++) {
-        dp[i].reserve(len2);
-        for (size_t j = 0; j < len2; j++) {
-            if (std::min(i, j) == 0) {
-                dp[i][j] = std::max(i, j);
-            } else {
-                dp[i][j] = std::min(std::min(dp[i - 1][j], dp[i][j - 1]) + 1, dp[i - 1][j - 1] + (a[i] != b[j]));
-            }
-        }
-    }
-    return dp[len1 - 1][len2 - 1];
+size_t StaticAnalyzer::stringDistance(const ASTString &a, const ASTString &b)
+{
+	size_t len1 = a.length(), len2 = b.length();
+
+	if (min(len1, len2) == 0) {
+		return max(len1, len2);
+	}
+
+	std::vector<std::vector<size_t> > dp;
+	dp.resize(len1);
+	for (size_t i = 0; i < len1; i++) {
+		dp[i].reserve(len2);
+		for (size_t j = 0; j < len2; j++) {
+			if (std::min(i, j) == 0) {
+				dp[i][j] = std::max(i, j);
+			} else {
+				dp[i][j] = std::min(std::min(dp[i - 1][j], dp[i][j - 1]) + 1, dp[i - 1][j - 1] + (a[i] != b[j]));
+			}
+		}
+	}
+	return dp[len1 - 1][len2 - 1];
+}
+
+ASTString StaticAnalyzer::toLowerCase(const ASTString &str) {
+	ASTString res = ASTString(str);
+	for (size_t i = 0; i < res.length(); i++) {
+		if (res[i] >= 'A' && res[i] <= 'Z') {
+			res[i] += 'a' - 'A';
+		}
+	}
+	return res;
 }
